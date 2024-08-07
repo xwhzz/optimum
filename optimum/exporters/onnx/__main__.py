@@ -79,8 +79,10 @@ def main_export(
     legacy: bool = False,
     no_dynamic_axes: bool = False,
     do_constant_folding: bool = True,
+    lora_path: Optional[str]= None,
     **kwargs_shapes,
 ):
+    print(lora_path)
     """
     Full-suite ONNX export function, exporting **from a model ID on Hugging Face Hub or a local model repository**.
 
@@ -307,6 +309,10 @@ def main_export(
         **loading_kwargs,
     )
 
+    if lora_path is not None:
+        print('Lora load!')
+        model.load_lora_weights(lora_path)
+
     needs_pad_token_id = task == "text-classification" and getattr(model.config, "pad_token_id", None) is None
 
     if needs_pad_token_id:
@@ -418,6 +424,7 @@ def main():
         library_name=args.library_name,
         legacy=args.legacy,
         do_constant_folding=not args.no_constant_folding,
+        lora_path=args.lora,
         **input_shapes,
     )
 

@@ -39,6 +39,13 @@ def parse_args_onnx(parser):
     )
 
     optional_group = parser.add_argument_group("Optional arguments")
+
+    optional_group.add_argument(
+        "--lora",
+        type=str,
+        default=None,
+    )
+
     optional_group.add_argument(
         "--task",
         default="auto",
@@ -47,6 +54,8 @@ def parse_args_onnx(parser):
             f" {str(TasksManager.get_all_tasks())}. For decoder models, use `xxx-with-past` to export the model using past key values in the decoder."
         ),
     )
+
+
     optional_group.add_argument(
         "--opset",
         type=int,
@@ -286,5 +295,6 @@ class ONNXExportCommand(BaseOptimumCLICommand):
             no_dynamic_axes=self.args.no_dynamic_axes,
             model_kwargs=self.args.model_kwargs,
             do_constant_folding=not self.args.no_constant_folding,
+            lora_path=self.args.lora,
             **input_shapes,
         )
