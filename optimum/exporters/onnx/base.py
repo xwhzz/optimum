@@ -319,7 +319,6 @@ class OnnxConfig(ExportConfig, ABC):
                 input_shapes = {}
             dummy_inputs = self.generate_dummy_inputs(framework="np", **input_shapes)
             dummy_inputs = self.generate_dummy_inputs_for_validation(dummy_inputs, onnx_input_names=onnx_input_names)
-
             onnx_inputs = {}
             for name, value in dummy_inputs.items():
                 if isinstance(value, (list, tuple)):
@@ -331,7 +330,9 @@ class OnnxConfig(ExportConfig, ABC):
             for name, value in onnx_inputs.items():
                 if value.dtype == np.float32 and dtype == "fp16":
                     onnx_inputs[name] = onnx_inputs[name].astype(np.float16)
-
+            for k,v in onnx_inputs.items():
+                if v.dtype == np.int64:
+                    onnx_inputs[k] = v.astype(np.int32)
             outputs = session.run(None, onnx_inputs)
             del session
 
@@ -476,6 +477,7 @@ class OnnxConfig(ExportConfig, ABC):
                     f'Could not generate dummy input for "{input_name}". Try adding a proper dummy input generator to '
                     "the model ONNX config."
                 )
+            
         return dummy_inputs
 
     @classmethod

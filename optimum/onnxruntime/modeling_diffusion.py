@@ -184,7 +184,7 @@ class ORTStableDiffusionPipelineBase(ORTModel):
         unet_path: Union[str, Path],
         vae_encoder_path: Optional[Union[str, Path]] = None,
         text_encoder_2_path: Optional[Union[str, Path]] = None,
-        provider: str = "CPUExecutionProvider",
+        provider: str = "CUDAExecutionProvider",
         session_options: Optional[ort.SessionOptions] = None,
         provider_options: Optional[Dict] = None,
     ):
@@ -212,6 +212,8 @@ class ORTStableDiffusionPipelineBase(ORTModel):
                 Provider option dictionary corresponding to the provider used. See available options
                 for each provider: https://onnxruntime.ai/docs/api/c/group___global.html . Defaults to `None`.
         """
+        session_options = ort.SessionOptions()
+        session_options.register_custom_ops_library('/home/xwh/project/onnxruntime/build/Linux/Release/libcustom_op_library.so')
         vae_decoder = ORTModel.load_model(vae_decoder_path, provider, session_options, provider_options)
         unet = ORTModel.load_model(unet_path, provider, session_options, provider_options)
 
@@ -485,12 +487,14 @@ class _ORTDiffusionModelPart:
 
     def __init__(self, session: ort.InferenceSession, parent_model: ORTModel):
         self.session = session
+        # self.ro = ort.RunOptions()
         self.parent_model = parent_model
         self.input_names = {input_key.name: idx for idx, input_key in enumerate(self.session.get_inputs())}
         self.output_names = {output_key.name: idx for idx, output_key in enumerate(self.session.get_outputs())}
         config_path = Path(session._model_path).parent / self.CONFIG_NAME
         self.config = self.parent_model._dict_from_json_file(config_path) if config_path.is_file() else {}
         self.input_dtype = {inputs.name: _ORT_TO_NP_TYPE[inputs.type] for inputs in self.session.get_inputs()}
+        # self.ro.add_run_config_entry("memory.enable_memory_arena_shrinkage", 'cpu:0;gpu:0')
 
     @property
     def device(self):
@@ -503,15 +507,31 @@ class _ORTDiffusionModelPart:
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
+def transform_input(input_data, do_guidance):
+    if do_guidance:
+        assert input_data.shape[0] % 2 == 0, "Guidance is only supported for even batch size."
+        batch_size = input_data.shape[0] // 2
+        input_ls = []
+        for i in range(batch_size):
+            input_ls.append(input_data[i])
+            input_ls.append(input_data[i + batch_size])
+        input_data = np.stack(input_ls, axis=0)
+    return input_data
 
 class ORTModelTextEncoder(_ORTDiffusionModelPart):
-    def forward(self, input_ids: np.ndarray):
-        onnx_inputs = {
-            "input_ids": input_ids,
-        }
-        outputs = self.session.run(None, onnx_inputs)
-        return outputs
+    def forward(self, input_ids: np.ndarray, fuse_info: Optional[list] = None, do_guidance: bool = True):
 
+        onnx_inputs = {}
+        if fuse_info is not None:
+            fuse_info = fuse_info * 2 if do_guidance else fuse_info
+            info = []
+            for i in fuse_info:
+                info.extend([i] * 77)
+            onnx_inputs["info"] = np.array(info).astype(np.int64) #fuse_info * 2 if do_guidance else fuse_info
+            # input_ids = transform_input(input_ids, do_guidance)
+        onnx_inputs["input_ids"] = input_ids
+        outputs = self.session.run(None, onnx_inputs,)
+        return outputs
 
 class ORTModelUnet(_ORTDiffusionModelPart):
     def __init__(self, session: ort.InferenceSession, parent_model: ORTModel):
@@ -525,11 +545,15 @@ class ORTModelUnet(_ORTDiffusionModelPart):
         text_embeds: Optional[np.ndarray] = None,
         time_ids: Optional[np.ndarray] = None,
         timestep_cond: Optional[np.ndarray] = None,
+        fuse_info: Optional[list] = None,
+        do_guidance: bool = True,
+        flag = False,
     ):
+        # if flag:
+        #     device_id = self.session.get_provider_options()['CUDAExecutionProvider']['device_id']
+        #     ro = ort.RunOptions()
+        #     ro.add_run_config_entry("memory.enable_memory_arena_shrinkage", f'cpu:0;gpu:{device_id}')
         onnx_inputs = {
-            "sample": sample,
-            "timestep": timestep,
-            "encoder_hidden_states": encoder_hidden_states,
         }
 
         if text_embeds is not None:
@@ -538,16 +562,53 @@ class ORTModelUnet(_ORTDiffusionModelPart):
             onnx_inputs["time_ids"] = time_ids
         if timestep_cond is not None:
             onnx_inputs["timestep_cond"] = timestep_cond
-        outputs = self.session.run(None, onnx_inputs)
+
+        if fuse_info is not None:
+            # [0,1,3,2]
+            info = fuse_info * 2 if do_guidance else fuse_info
+            info_1 = []
+            info_2 = []
+            info_3 = []
+            info_4 = []
+            info_5 = []
+            for i in info:
+                info_1.extend([i] * 64 * 64)
+                info_2.extend([i] * 77)
+                info_3.extend([i] * 1024)
+                info_4.extend([i] * 256)
+                info_5.extend([i] * 64)
+            onnx_inputs["info"] = np.array(info).astype(np.int64)
+            onnx_inputs["info_1"] = np.array(info_1).astype(np.int64)
+            onnx_inputs["info_2"] = np.array(info_2).astype(np.int64)
+            onnx_inputs["info_3"] = np.array(info_3).astype(np.int64)
+            onnx_inputs["info_4"] = np.array(info_4).astype(np.int64)
+            onnx_inputs["info_5"] = np.array(info_5).astype(np.int64)
+
+            # sample = transform_input(sample, do_guidance)
+            # timestep = transform_input(timestep, do_guidance)
+            # encoder_hidden_states = transform_input(encoder_hidden_states, do_guidance)
+        onnx_inputs["sample"] = sample
+        onnx_inputs["timestep"] = timestep
+        onnx_inputs["encoder_hidden_states"] = encoder_hidden_states
+        outputs = self.session.run(None, onnx_inputs,)
         return outputs
 
 
 class ORTModelVaeDecoder(_ORTDiffusionModelPart):
-    def forward(self, latent_sample: np.ndarray):
+    def forward(self, latent_sample: np.ndarray, fuse_info: Optional[np.ndarray]=None, do_guidance: bool = True):
+        # print(latent_sample.shape)
+        # if getattr(self, "ro", None) is None:
+        #     device_id = self.session.get_provider_options()['CUDAExecutionProvider']['device_id']
+        #     self.ro = ort.RunOptions()
+        #     self.ro.add_run_config_entry("memory.enable_memory_arena_shrinkage", f'cpu:0;gpu:{device_id}')
         onnx_inputs = {
-            "latent_sample": latent_sample,
+            # "latent_sample": latent_sample,
         }
-        outputs = self.session.run(None, onnx_inputs)
+        if fuse_info is not None:
+            onnx_inputs["info"] = fuse_info * 2 if do_guidance else fuse_info
+            # latent_sample = transform_input(latent_sample, do_guidance)
+        onnx_inputs["latent_sample"] = latent_sample
+        outputs = self.session.run(None, onnx_inputs,)
         return outputs
 
 
@@ -567,7 +628,18 @@ class ORTStableDiffusionPipeline(ORTStableDiffusionPipelineBase, StableDiffusion
     """
 
     __call__ = StableDiffusionPipelineMixin.__call__
+    text_worker = StableDiffusionPipelineMixin.text_worker
+    unet_worker = StableDiffusionPipelineMixin.unet_worker
+    vae_worker = StableDiffusionPipelineMixin.vae_worker
 
+
+# @add_end_docstrings(ONNX_MODEL_END_DOCSTRING)
+# class ORTStableDiffusionPipelineFuse(ORTStableDiffusionPipelineBase, StableDiffusionPipelineMixinFuse):
+#     """
+#     ONNX Runtime-powered stable diffusion pipeline corresponding to [diffusers.StableDiffusionPipeline](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/text2img#diffusers.StableDiffusionPipeline).
+#     """
+
+#     __call__ = StableDiffusionPipelineMixinFuse.__call__
 
 @add_end_docstrings(ONNX_MODEL_END_DOCSTRING)
 class ORTStableDiffusionImg2ImgPipeline(ORTStableDiffusionPipelineBase, StableDiffusionImg2ImgPipelineMixin):

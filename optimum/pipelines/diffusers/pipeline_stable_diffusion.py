@@ -21,9 +21,11 @@ import torch
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 from .pipeline_utils import DiffusionPipelineMixin, rescale_noise_cfg
-
+from dataclasses import dataclass
+from PIL import Image
 
 logger = logging.getLogger(__name__)
+
 
 
 class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
@@ -36,6 +38,7 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         negative_prompt: Optional[Union[str, list]],
         prompt_embeds: Optional[np.ndarray] = None,
         negative_prompt_embeds: Optional[np.ndarray] = None,
+        fuse_info: Optional[np.ndarray] = None,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -85,8 +88,8 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
                     "The following part of your input was truncated because CLIP can only handle sequences up to"
                     f" {self.tokenizer.model_max_length} tokens: {removed_text}"
                 )
+            prompt_embeds = self.text_encoder(input_ids=text_input_ids.astype(np.int32),fuse_info=fuse_info, do_guidance=False)[0]
 
-            prompt_embeds = self.text_encoder(input_ids=text_input_ids.astype(np.int32))[0]
 
         prompt_embeds = np.repeat(prompt_embeds, num_images_per_prompt, axis=0)
 
@@ -118,8 +121,9 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
                 max_length=max_length,
                 truncation=True,
                 return_tensors="np",
+                fuse_info = fuse_info
             )
-            negative_prompt_embeds = self.text_encoder(input_ids=uncond_input.input_ids.astype(np.int32))[0]
+            negative_prompt_embeds = self.text_encoder(input_ids=uncond_input.input_ids.astype(np.int32), fuse_info=fuse_info, do_guidance=False)[0]
 
         if do_classifier_free_guidance:
             negative_prompt_embeds = np.repeat(negative_prompt_embeds, num_images_per_prompt, axis=0)
@@ -218,6 +222,7 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         callback: Optional[Callable[[int, int, np.ndarray], None]] = None,
         callback_steps: int = 1,
         guidance_rescale: float = 0.0,
+        **kwargs,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -286,28 +291,32 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
             list of `bool`s denoting whether the corresponding generated image likely represents "not-safe-for-work"
             (nsfw) content, according to the `safety_checker`.
         """
-        if isinstance(num_inference_steps, list):
+        # print("Here")
+        print(kwargs)
+        if isinstance(num_inference_steps, int):
             # 直接将该函数的参数传入p_call中
-            return self.p_call(
-                prompt=prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                negative_prompt=negative_prompt,
-                num_images_per_prompt=num_images_per_prompt,
-                eta=eta,
-                generator=generator,
-                latents=latents,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                output_type=output_type,
-                return_dict=return_dict,
-                callback=callback,
-                callback_steps=callback_steps,
-                guidance_rescale=guidance_rescale,
-            )
-        print("Original")
+            num_inference_steps = [num_inference_steps]
+        return self.p_call(
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            negative_prompt=negative_prompt,
+            num_images_per_prompt=num_images_per_prompt,
+            eta=eta,
+            generator=generator,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            output_type=output_type,
+            return_dict=return_dict,
+            callback=callback,
+            callback_steps=callback_steps,
+            guidance_rescale=guidance_rescale,
+            **kwargs,
+        )
+
         height = height or self.unet.config.get("sample_size", 64) * self.vae_scale_factor
         width = width or self.unet.config.get("sample_size", 64) * self.vae_scale_factor
 
@@ -421,6 +430,19 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
 
+    @staticmethod
+    def transform_output(output_data, do_guidance):
+        if do_guidance:
+            assert output_data.shape[0] % 2 == 0, "The output data should have an even number of samples."
+            output_ls = [None for _ in range(output_data.shape[0])]
+            batch_size = output_data.shape[0] // 2
+            for i in range(batch_size):
+                output_ls[i] = output_data[2 * i]
+                output_ls[i+batch_size] = output_data[2 * i+1]
+            output_data = np.stack(output_ls)
+        return output_data
+
+
     def p_call(
         self,
         prompt: Optional[Union[str, List[str]]] = None,
@@ -440,6 +462,7 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         callback: Optional[Callable[[int, int, np.ndarray], None]] = None,
         callback_steps: int = 1,
         guidance_rescale: float = 0.0,
+        **kwargs,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -510,7 +533,10 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         """
         height = height or self.unet.config.get("sample_size", 64) * self.vae_scale_factor
         width = width or self.unet.config.get("sample_size", 64) * self.vae_scale_factor
-
+        fuse_info = kwargs.get("fuse_info", None)
+        # print(fuse_info)
+        if fuse_info is not None:
+            fuse_info = np.array(fuse_info, dtype=np.int64)
         # check inputs. Raise error if not correct
         self.check_inputs(
             prompt, height, width, callback_steps, negative_prompt, prompt_embeds, negative_prompt_embeds
@@ -539,22 +565,18 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
             negative_prompt,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
+            fuse_info = fuse_info
         )
 
-        # set timesteps, 这里需要改
-        # self.scheduler.set_timesteps(num_inference_steps)
-        # timesteps = self.scheduler.timesteps
-        # 这里的核心是将num_inference_steps看成可以batch的东西
         if isinstance(num_inference_steps, int):
             num_inference_steps = [num_inference_steps]
         timesteps_list = []
-        # num_warmup_steps_list = []
+
         for num_step in num_inference_steps:
             self.scheduler.set_timesteps(num_step)
             timesteps = self.scheduler.timesteps
             timesteps_list.append(timesteps)
-            # num_warmup_steps_list.append(len(timestep)- num_step * self.scheduler.order)
-        # print(timesteps)
+
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             self.unet.config.get("in_channels", 4),
@@ -582,26 +604,25 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         for i in self.progress_bar(range(max_timesteps)):
             batch_size = len(cur_batch)
             latent_model_input = np.concatenate([latents] * 2) if do_classifier_free_guidance else latents
-            # print(cur_batch)
             for idx in range(latent_model_input.shape[0]):
                 cur_b = cur_batch[idx % batch_size]
                 self.scheduler.set_timesteps(num_inference_steps[cur_b])
-                # print(cur_b, timesteps_list[cur_b])
                 latent_model_input[idx:idx+1] = self.scheduler.scale_model_input(torch.from_numpy(latent_model_input[idx:idx+1]), timesteps_list[cur_b][i]).cpu().numpy()
-            # latent_model_input = self.scheduler.scale_model_input(torch.from_numpy(latent_model_input), t)
-            # latent_model_input = latent_model_input.cpu().numpy()
-
-            # predict the noise residual
-            # timestep = np.array([t], dtype=timestep_dtype)
             t = []
             for bb in cur_batch:
-                # t.append(timesteps_list[i][0])
                 t.append(timesteps_list[bb][i])
             if do_classifier_free_guidance:
                 t = t * 2
             timestep = np.array(t, dtype=timestep_dtype)
-            noise_pred = self.unet(sample=latent_model_input, timestep=timestep, encoder_hidden_states=prompt_embeds)
+            flag = False
+            for batch in cur_batch:
+                if i + 1 == num_inference_steps[batch]:
+                    flag = True
+                    break
+            noise_pred = self.unet(sample=latent_model_input, timestep=timestep, encoder_hidden_states=prompt_embeds,fuse_info=fuse_info,flag=flag)
             noise_pred = noise_pred[0]
+            # if fuse_info is not None:
+            #     noise_pred = self.transform_output(noise_pred, do_classifier_free_guidance)
 
             # perform guidance
             if do_classifier_free_guidance:
@@ -616,11 +637,6 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
             remove = []
             prompt_em_1 = []
             prompt_em_2 = []
-            flag = False
-            for batch in cur_batch:
-                if i + 1 == num_inference_steps[batch]:
-                    flag = True
-                    break
             for ii in range(noise_pred.shape[0]):
                 batch_idx = cur_batch[ii]
                 self.scheduler.set_timesteps(num_inference_steps[batch_idx])
@@ -643,9 +659,6 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
                 latents = np.concatenate(latents_)
                 for r in remove:
                     cur_batch.remove(r)
-        # for i in range(batch_size):
-        #     assert final_latent[i] is not None
-            # print(final_latent[i])
         latents = np.concatenate(final_latent)
         if output_type == "latent":
             image = latents
@@ -653,9 +666,18 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
         else:
             latents /= self.vae_decoder.config.get("scaling_factor", 0.18215)
             # it seems likes there is a strange result for using half-precision vae decoder if batchsize>1
-            image = np.concatenate(
-                [self.vae_decoder(latent_sample=latents[i : i + 1])[0] for i in range(latents.shape[0])]
-            )
+            # if fuse_info is None:
+            #     image = np.concatenate(
+            #         [self.vae_decoder(latent_sample=latents[i : i + 1],)[0] for i in range(latents.shape[0])]
+            #     )
+            # else:
+            #     image = np.concatenate(
+            #         [self.vae_decoder(latent_sample=latents[i : i + 1], fuse_info=fuse_info)[0] for i in range(latents.shape[0])]
+            #     )
+            # maybe degrade the quality.
+            image = self.vae_decoder(latent_sample=latents, fuse_info=fuse_info, do_guidance=False)[0]
+            # if fuse_info is not None:
+            #     image = self.transform_output(image, do_classifier_free_guidance)
             image, has_nsfw_concept = self.run_safety_checker(image)
 
         if has_nsfw_concept is None:
@@ -669,6 +691,137 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
             return (image, has_nsfw_concept)
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
+    def check_stage(self, request: list, stage: int):
+        assert all([r["stage"] == stage for r in request]), f"There is a mismatch in the stage of the requests. {stage}"
+
+    def text_worker(self,
+            request: list, 
+        ):
+        self.check_stage(request,0)
+        fuse_info = [r["lora_tag"] for r in request]
+        callback_steps = 1
+        height = 256 
+        width = 256 
+        generator = np.random
+        do_classifier_free_guidance = True
+
+
+        prompt = []
+        negative_prompt = []
+        negative_prompt_embeds = []
+        for r in request:
+            prompt.append(r["prompt"])
+            if "negative_prompt" in r:
+                negative_prompt.append(r["negative_prompt"])
+            self.scheduler.set_timesteps(r["inference_steps"])
+            r["timesteps_list"] = self.scheduler.timesteps
+        prompt_embeds = None
+        negative_prompt_embeds = None
+        self.check_inputs(
+            prompt, height, width, callback_steps, negative_prompt, prompt_embeds, negative_prompt_embeds
+        )
+
+        batch_size = len(prompt)
+
+        prompt_embeds = self._encode_prompt(
+            prompt,
+            1,
+            do_classifier_free_guidance,
+            negative_prompt,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            fuse_info = fuse_info, 
+        )
+
+        latents = self.prepare_latents(
+            batch_size * 1,
+            self.unet.config.get("in_channels", 4),
+            height,
+            width,
+            prompt_embeds.dtype,
+            generator,
+        )
+        num_requests = len(request)
+        for idx, r in enumerate(request):
+            r["latents"] = latents[idx:idx+1]
+            # r["stage"] = 1
+            r["prompt_embeds"] = prompt_embeds[idx:idx+1]
+            if negative_prompt:
+                r["negative_prompt_embeds"] = prompt_embeds[idx+num_requests:idx+num_requests+1]
+        
+        return request
+        
+
+    def unet_worker(self, request: list, ):
+        self.check_stage(request,1)
+        guidance_scale = 7.5
+        guidance_rescale = 0.0
+        timestep_dtype = self.unet.input_dtype.get("timestep", np.float32)
+        extra_step_kwargs = {"eta": 0.0}
+        fuse_info = [r["lora_tag"] for r in request]
+        latents = np.concatenate([r["latents"] for r in request])
+        do_classifier_free_guidance = True
+        t = []
+        prompt_embeds = []
+        negative_prompt_embeds = []
+        for idx in range(latents.shape[0]):
+            inference_step = request[idx]["inference_steps"]
+            self.scheduler.set_timesteps(inference_step)
+            timesteps_list = request[idx]["timesteps_list"]
+            cur_step = request[idx]["cur_step"]
+            ts = timesteps_list[cur_step]
+            t.append(ts)
+            latents[idx:idx+1] = self.scheduler.scale_model_input(torch.from_numpy(latents[idx:idx+1]), ts).cpu().numpy()
+            prompt_embeds.append(request[idx]["prompt_embeds"])
+            if do_classifier_free_guidance:
+                negative_prompt_embeds.append(request[idx]["negative_prompt_embeds"])
+        prompt_embeds = np.concatenate(prompt_embeds+negative_prompt_embeds)
+
+        latent_model_input = np.concatenate([latents] * 2) if do_classifier_free_guidance else latents
+        t = t * 2 if do_classifier_free_guidance else t
+        timestep = np.array(t, dtype=timestep_dtype)
+        noise_pred = self.unet(sample=latent_model_input, timestep=timestep, encoder_hidden_states=prompt_embeds,fuse_info=fuse_info, flag=False)
+        noise_pred = noise_pred[0]
+        # if fuse_info is not None:
+        #     noise_pred = self.transform_output(noise_pred, do_classifier_free_guidance)
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = np.split(noise_pred, 2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            if guidance_rescale > 0.0:
+                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)   
+            
+        for ii in range(noise_pred.shape[0]):
+            req = request[ii]
+            inference_step = req["inference_steps"]
+            self.scheduler.set_timesteps(inference_step)
+            req["latents"] = self.scheduler.step(
+                torch.from_numpy(noise_pred[ii:ii+1]), t[ii], torch.from_numpy(latents[ii:ii+1]), # **extra_step_kwargs
+            ).prev_sample.numpy()
+
+
+    def vae_worker(self, request: list, output_type: str = "pil"):
+        self.check_stage(request, 2)
+        latents = []
+        for r in request:
+            latents.append(r["latents"])
+        latents = np.concatenate(latents)
+        if output_type == "latent":
+            image = latents
+            has_nsfw_concept = None
+        else:
+            latents /= self.vae_decoder.config.get("scaling_factor", 0.18215)
+            image = self.vae_decoder(latent_sample=latents,do_guidance=False)[0]
+            image, has_nsfw_concept = self.run_safety_checker(image)
+        if has_nsfw_concept is None:
+            do_denormalize = [True] * image.shape[0]
+        else:
+            do_denormalize = [not has_nsfw for has_nsfw in has_nsfw_concept]
+        image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
+
+        return image
+        # return image
+        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept).imag
 
     def run_safety_checker(self, image: np.ndarray):
         if self.safety_checker is None:
@@ -688,3 +841,7 @@ class StableDiffusionPipelineMixin(DiffusionPipelineMixin):
             image = np.concatenate(images)
 
         return image, has_nsfw_concept
+
+
+# class StableDiffusionPipelineMixinFuse(StableDiffusionPipelineMixin):
+#     __call__ = StableDiffusionPipelineMixin.p_call

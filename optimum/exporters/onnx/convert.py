@@ -1089,7 +1089,9 @@ def onnx_export_from_model(
             raise ValueError(
                 f"Exporting with a sequence length of 1 a {model_type} model is not supported and can yield unexpected results."
             )
-
+    # if task == "stable-diffusion":
+    #     input_shapes["height"] = 256
+    
     onnx_config, models_and_onnx_configs = _get_submodels_and_onnx_configs(
         model=model,
         task=task,

@@ -947,7 +947,7 @@ class CLIPTextWithProjectionOnnxConfig(TextEncoderOnnxConfig):
     @property
     def inputs(self) -> Dict[str, Dict[int, str]]:
         return {
-            "input_ids": {0: "batch_size", 1: "sequence_length"},
+            "input_ids": {0: "batch_size",} #1: "sequence_length"},
         }
 
     @property
@@ -967,7 +967,7 @@ class CLIPTextOnnxConfig(CLIPTextWithProjectionOnnxConfig):
     @property
     def outputs(self) -> Dict[str, Dict[int, str]]:
         common_outputs = {
-            "last_hidden_state": {0: "batch_size", 1: "sequence_length"},
+            "last_hidden_state": {0: "batch_size"}, #1: "sequence_length"},
             "pooler_output": {0: "batch_size"},
         }
         if self._normalized_config.output_hidden_states:
@@ -1009,9 +1009,9 @@ class UNetOnnxConfig(VisionOnnxConfig):
     @property
     def inputs(self) -> Dict[str, Dict[int, str]]:
         common_inputs = {
-            "sample": {0: "batch_size", 2: "height", 3: "width"},
-            "timestep": {0: "steps"},
-            "encoder_hidden_states": {0: "batch_size", 1: "sequence_length"},
+            "sample": {0: "batch_size",}, #2: "height", 3: "width"},
+            "timestep": {0: "batch_size"},#{0: "steps"},
+            "encoder_hidden_states": {0: "batch_size",} #1: "sequence_length"},
         }
 
         # TODO : add text_image, image and image_embeds
@@ -1026,7 +1026,7 @@ class UNetOnnxConfig(VisionOnnxConfig):
     @property
     def outputs(self) -> Dict[str, Dict[int, str]]:
         return {
-            "out_sample": {0: "batch_size", 2: "height", 3: "width"},
+            "out_sample": {0: "batch_size", }#2: "height", 3: "width"},
         }
 
     @property
@@ -1097,13 +1097,13 @@ class VaeDecoderOnnxConfig(VisionOnnxConfig):
     @property
     def inputs(self) -> Dict[str, Dict[int, str]]:
         return {
-            "latent_sample": {0: "batch_size", 2: "height_latent", 3: "width_latent"},
+            "latent_sample": {0: "batch_size",} #2: "height_latent", 3: "width_latent"},
         }
 
     @property
     def outputs(self) -> Dict[str, Dict[int, str]]:
         return {
-            "sample": {0: "batch_size", 2: "height", 3: "width"},
+            "sample": {0: "batch_size",} #2: "height", 3: "width"},
         }
 
 

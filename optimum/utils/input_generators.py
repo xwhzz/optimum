@@ -57,8 +57,10 @@ DEFAULT_DUMMY_SHAPES = {
     "sequence_length": 16,
     "num_choices": 4,
     # image
-    "width": 64,
-    "height": 64,
+    "width": 32,
+    "height": 32,
+    # "width": 256,
+    # "height": 256,
     "num_channels": 3,
     "point_batch_size": 3,
     "nb_points_per_image": 2,

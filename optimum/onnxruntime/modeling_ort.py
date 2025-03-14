@@ -371,16 +371,15 @@ class ORTModel(OptimizedModel):
             path = str(path)
 
         # `providers` and `provider_options` need to be of the same length
-        if provider_options is not None:
-            providers_options = [provider_options] + [{} for _ in range(len(providers) - 1)]
-        else:
-            providers_options = None
-
+        # if provider_options is not None:
+        #     providers_options = [provider_options] + [{} for _ in range(len(providers) - 1)]
+        # else:
+        #     providers_options = None
+        print(session_options,path, providers)
         return ort.InferenceSession(
             path,
-            providers=providers,
+            providers=["CUDAExecutionProvider"],
             sess_options=session_options,
-            provider_options=providers_options,
         )
 
     def _save_pretrained(self, save_directory: Union[str, Path]):
